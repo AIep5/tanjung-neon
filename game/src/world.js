@@ -1,124 +1,314 @@
-// The game's rules and state, with no drawing and no browser in it: the player's paddle, the
-// pool of falling blocks and coins, spawning, collisions, score, lives and level. step() advances
-// one fixed step and returns what happened as bit flags, so the caller can react without the
-// world knowing about screens or sound. Nothing here allocates after createWorld returns.
-import { BLOCK, COIN, FIELD, LEVEL, LIVES, PLAYER, POOL_SIZE } from './config.js';
+// The simulation: no drawing, no browser in here except localStorage save/load.
+// Fixed 1/60 s steps. The player walks or drives, steals parked cars, traffic
+// and crowds live their lives, rain sets the grip, missions advance on reaching
+// their markers. Returns event bit flags so the caller can react (banner, sound,
+// game over) without the world knowing about screens. No Math.random in here:
+// every random draw comes from the seeded RNG passed to createWorld.
 
-export const KIND_BLOCK = 0;
-export const KIND_COIN = 1;
+import { BEST_KEY, SAVE_KEY, TUNING } from './config.js';
+import { ACTION_ENTER, ACTION_USE } from './input.js';
+import { buildCity, collidesBuilding, isWater } from './city.js';
+import { createTraffic, driveCar, stealCar, stepTraffic } from './vehicles.js';
+import { createCrowd, stepCrowd } from './pedestrians.js';
+import { createRain, gripFactor, stepRain } from './rain.js';
+import { createPolice, raiseWanted, stepPolice } from './police.js';
+import { MISSIONS, completeMission, dialogueFor, failMission, setDialogue, startMission } from './missions.js';
+import { buyShopItem, nearestStall, shopItems } from './market.js';
+import { punchAttack, stepGuard } from './combat.js';
 
-export const EVENT_HIT = 1;
-export const EVENT_COIN = 2;
-export const EVENT_OVER = 4;
-
-function overlaps(a, b) {
-  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
-}
+export const EVENT_MISSION = 1;
+export const EVENT_WANTED = 2;
+export const EVENT_BOUGHT = 4;
+export const EVENT_GAMEOVER = 8;
 
 export function createWorld(random) {
-  const player = { x: 0, y: FIELD.groundY - PLAYER.height, width: PLAYER.width, height: PLAYER.height, invulnerable: 0 };
-  const items = [];
-  for (let index = 0; index < POOL_SIZE; index += 1) {
-    items.push({ active: false, kind: KIND_BLOCK, x: 0, y: 0, width: 0, height: 0, speed: 0 });
-  }
-  const state = { player, items, score: 0, lives: LIVES, level: 1, elapsed: 0, blockTimer: 0, coinTimer: 0 };
+  const city = buildCity(random);
+  const state = {
+    elapsed: 0,
+    money: 120,
+    wanted: 0,
+    missionIndex: -1,
+    mission: null,
+    player: { x: 0, y: 0, angle: -Math.PI / 2, speed: 0, onFoot: true, car: null, health: 100 },
+    cars: [],
+    peds: [],
+    rain: null,
+    police: null,
+    upgrades: { tyres: 0, engine: 0, armour: 0 },
+    inventory: { contraband: 0 },
+    camera: { x: 0, y: 0 },
+    best: 0,
+    shop: { open: false, sel: 0, cd: 0 },
+    guard: null,
+    dialogue: null,
+    missionFailed: false,
+    failedMissionIndex: -1,
+  };
+  const world = { state, city, random, reset, step, save, load };
 
   function reset() {
-    player.x = (FIELD.width - player.width) / 2;
-    player.invulnerable = 0;
-    for (const item of items) item.active = false;
-    state.score = 0;
-    state.lives = LIVES;
-    state.level = 1;
     state.elapsed = 0;
-    state.blockTimer = BLOCK.interval;
-    state.coinTimer = COIN.interval;
+    state.money = 120;
+    state.wanted = 0;
+    state.missionIndex = -1;
+    state.mission = null;
+    state.player.x = city.spawn.x;
+    state.player.y = city.spawn.y;
+    state.player.angle = -Math.PI / 2;
+    state.player.speed = 0;
+    state.player.onFoot = true;
+    state.player.car = null;
+    state.player.health = 100;
+    state.cars = createTraffic(city, random);
+    state.peds = createCrowd(city, random);
+    state.rain = createRain(random);
+    state.police = createPolice(city, random);
+    state.upgrades = { tyres: 0, engine: 0, armour: 0 };
+    state.inventory = { contraband: 0 };
+    state.shop = { open: false, sel: 0, cd: 0 };
+    state.guard = null;
+    state.dialogue = null;
+    state.missionFailed = false;
+    state.failedMissionIndex = -1;
+    state.camera.x = state.player.x;
+    state.camera.y = state.player.y;
+    // Best is NOT reset: it is the player's record across runs.
   }
 
-  function freeItem() {
-    for (let index = 0; index < items.length; index += 1) if (!items[index].active) return items[index];
+  /** True when a circle of radius r at (x, y) is blocked for the player. */
+  function solid(x, y, r) {
+    return collidesBuilding(city, x, y, r) || isWater(city, x, y);
+  }
+
+  function moveOnFoot(dt, ax) {
+    const p = state.player;
+    const nx = p.x + ax.x * TUNING.walkSpeed * dt;
+    const ny = p.y + ax.y * TUNING.walkSpeed * dt;
+    if (!solid(nx, p.y, 10) && nx > 10 && nx < 2550) p.x = nx;
+    if (!solid(p.x, ny, 10) && ny > 10 && ny < 1790) p.y = ny;
+    if (ax.x !== 0 || ax.y !== 0) p.angle = Math.atan2(ax.y, ax.x);
+    p.speed = (ax.x !== 0 || ax.y !== 0) ? TUNING.walkSpeed : 0;
+  }
+
+  function enterOrExitCar() {
+    const p = state.player;
+    if (p.onFoot) {
+      const car = stealCar(p, state.cars);
+      if (!car) return false;
+      car.driver = 'player';
+      p.car = car;
+      p.onFoot = false;
+      p.x = car.x;
+      p.y = car.y;
+      p.angle = car.angle;
+      if (!car.stolen) {
+        car.stolen = true;
+        raiseWanted(state, 1);
+        return 'stolen';
+      }
+      return 'entered';
+    }
+    const car = p.car;
+    car.driver = 'parked';
+    car.speed = 0;
+    p.car = null;
+    p.onFoot = true;
+    // Step out to the car's left side.
+    p.x = car.x - Math.sin(car.angle) * 26;
+    p.y = car.y + Math.cos(car.angle) * 26;
+    p.angle = car.angle;
+    p.speed = 0;
+    return 'exited';
+  }
+
+  function checkMission(dt) {
+    const mission = state.mission;
+    if (!mission) return 0;
+    const target = mission.def.targets[mission.checkpoint];
+    const p = state.player;
+    const dist = Math.hypot(target.x - p.x, target.y - p.y);
+    if (mission.def.timer) {
+      mission.timeLeft -= dt;
+      if (mission.timeLeft <= 0) {
+        // Out of time: the job falls through — park it for a retry.
+        failMission(state);
+        return EVENT_MISSION;
+      }
+    }
+    let reached = false;
+    if (target.hold) {
+      if (dist < TUNING.missionRadius) {
+        mission.hold += dt;
+        if (mission.hold >= target.hold) reached = true;
+      } else {
+        mission.hold = 0;
+      }
+    } else if (dist < TUNING.missionRadius) {
+      reached = true;
+    }
+    if (!reached) return 0;
+    mission.checkpoint += 1;
+    mission.hold = 0;
+    // Market Run: every delivered package draws more heat.
+    if (mission.def.id === 'market-run') raiseWanted(state, 1);
+    if (mission.checkpoint < mission.def.targets.length) {
+      setDialogue(state, dialogueFor(mission), 4);
+      return EVENT_MISSION;
+    }
+    completeMission(state);
+    // Roll straight into the next job when there is one.
+    if (state.missionIndex < MISSIONS.length) startMission(state, state.missionIndex);
+    return EVENT_MISSION;
+  }
+
+  /** Shop open/close + buying, while the world is frozen. Returns events. */
+  function stepShop(dt, input) {
+    const shop = state.shop;
+    const items = shopItems(state);
+    if (shop.cd > 0) shop.cd -= dt;
+    if (input) {
+      const actions = input.takeGameActions();
+      const axis = input.axis();
+      if (axis.y !== 0 && shop.cd <= 0) {
+        shop.sel = (shop.sel + (axis.y > 0 ? 1 : -1) + items.length) % items.length;
+        shop.cd = 0.18;
+      }
+      if (actions & ACTION_ENTER) {
+        shop.open = false;
+        return EVENT_BOUGHT;
+      }
+      if (actions & ACTION_USE) {
+        const item = items[shop.sel];
+        if (item && buyShopItem(state, item.id)) return EVENT_BOUGHT;
+        return 0;
+      }
+    }
+    return 0;
+  }
+
+  /** F near a stall opens the shop; F near the heist guard punches him. */
+  function handleUse() {
+    const p = state.player;
+    if (punchAttack(state) !== null) return 'punch';
+    if (nearestStall(state, city)) {
+      state.shop.open = true;
+      state.shop.sel = 0;
+      state.shop.cd = 0.2;
+      if (p.car) p.car.speed = 0;
+      p.speed = 0;
+      return 'shop';
+    }
     return null;
   }
 
-  function spawnBlock() {
-    const item = freeItem();
-    if (item === null) return;
-    item.active = true;
-    item.kind = KIND_BLOCK;
-    item.width = BLOCK.minWidth + random() * (BLOCK.maxWidth - BLOCK.minWidth);
-    item.height = BLOCK.height;
-    item.x = random() * (FIELD.width - item.width);
-    item.y = -item.height;
-    item.speed = BLOCK.speed + BLOCK.speedPerLevel * (state.level - 1) + random() * BLOCK.speedJitter;
-  }
-
-  function spawnCoin() {
-    const item = freeItem();
-    if (item === null) return;
-    item.active = true;
-    item.kind = KIND_COIN;
-    item.width = COIN.size;
-    item.height = COIN.size;
-    item.x = random() * (FIELD.width - item.width);
-    item.y = -item.height;
-    item.speed = COIN.speed + COIN.speedPerLevel * (state.level - 1);
-  }
-
-  function blockInterval() {
-    return Math.max(BLOCK.minInterval, BLOCK.interval * BLOCK.intervalScale ** (state.level - 1));
-  }
-
   /**
-   * One fixed step. `direction` is -1, 0 or 1 (left, still, right). With `harmless` set (the title
-   * screen's backdrop) things fall but nothing touches the player and nothing scores.
+   * One fixed step. `input` is the input object (direction/throttle/axis/
+   * takeActions/handbrake) or null for a backdrop with no player control.
    */
-  function step(dt, direction, harmless) {
+  function step(dt, input) {
     let events = 0;
     state.elapsed += dt;
-    state.level = Math.min(LEVEL.max, 1 + Math.floor(state.elapsed / LEVEL.seconds));
+    stepRain(state.rain, dt, state.elapsed);
 
-    player.x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * dt));
-    if (player.invulnerable > 0) player.invulnerable = Math.max(0, player.invulnerable - dt);
-
-    state.blockTimer -= dt;
-    if (state.blockTimer <= 0) {
-      spawnBlock();
-      state.blockTimer += blockInterval();
-    }
-    state.coinTimer -= dt;
-    if (state.coinTimer <= 0) {
-      spawnCoin();
-      state.coinTimer += COIN.interval + random() * COIN.intervalJitter;
+    // Shop open: the world freezes (rain still falls); only shop input counts.
+    if (state.shop.open) {
+      events |= stepShop(dt, input);
+      if (state.money > state.best) state.best = state.money;
+      return events;
     }
 
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      if (!item.active) continue;
-      item.y += item.speed * dt;
-      if (item.y > FIELD.groundY) {
-        item.active = false;
-        if (item.kind === KIND_BLOCK && !harmless) state.score += BLOCK.dodgePoints;
-        continue;
+    const p = state.player;
+    if (input) {
+      const gameActions = input.takeGameActions();
+      if (gameActions & ACTION_ENTER) {
+        const result = enterOrExitCar();
+        if (result === 'stolen') events |= EVENT_WANTED;
       }
-      if (harmless || !overlaps(item, player)) continue;
-      if (item.kind === KIND_COIN) {
-        item.active = false;
-        state.score += COIN.points;
-        events |= EVENT_COIN;
-      } else if (player.invulnerable === 0) {
-        item.active = false;
-        state.lives -= 1;
-        player.invulnerable = PLAYER.invulnerable;
-        events |= EVENT_HIT;
-        if (state.lives === 0) {
-          events |= EVENT_OVER;
-          break;
+      if (gameActions & ACTION_USE) {
+        const used = handleUse();
+        if (used === 'shop') events |= EVENT_BOUGHT;
+      }
+      if (p.onFoot) {
+        moveOnFoot(dt, input.axis());
+      } else if (p.car) {
+        p.car.handbrake = input.handbrake();
+        const grip = gripFactor(state.rain) * (1 + 0.05 * state.upgrades.tyres);
+        const boost = 1 + 0.08 * state.upgrades.engine;
+        const px = p.car.x;
+        const py = p.car.y;
+        driveCar(p.car, input.direction(), input.throttle(), dt, grip, solid, boost);
+        // Don't drive through another car: bounce back to the pre-move spot.
+        // A move that opens the gap (backing out of a jam) is always allowed,
+        // or two cars nose-to-nose freeze each other forever.
+        for (const other of state.cars) {
+          if (other === p.car) continue;
+          const before = Math.hypot(other.x - px, other.y - py);
+          const after = Math.hypot(other.x - p.car.x, other.y - p.car.y);
+          if (after < 18 && after <= before) {
+            p.car.x = px;
+            p.car.y = py;
+            p.car.speed *= 0.3;
+            break;
+          }
         }
+        p.x = p.car.x;
+        p.y = p.car.y;
+        p.angle = p.car.angle;
+        p.speed = p.car.speed;
       }
     }
+
+    stepTraffic(state.cars, city, dt, random);
+    stepCrowd(state.peds, city, dt, random);
+    stepGuard(state, city, dt);
+    stepPolice(state.police, world, dt);
+
+    events |= checkMission(dt);
+
+    // Camera follows the player (or their car), clamped to the world.
+    const tx = Math.min(Math.max(p.x, 640), 2560 - 640);
+    const ty = Math.min(Math.max(p.y, 360), 1800 - 360);
+    const k = Math.min(1, TUNING.cameraLerp * dt);
+    state.camera.x += (tx - state.camera.x) * k;
+    state.camera.y += (ty - state.camera.y) * k;
+
+    if (state.money > state.best) state.best = state.money;
+    if (p.health <= 0) events |= EVENT_GAMEOVER;
     return events;
   }
 
+  function save() {
+    try {
+      window.localStorage.setItem(SAVE_KEY, JSON.stringify({
+        money: state.money,
+        upgrades: state.upgrades,
+        missionIndex: state.missionIndex,
+        best: state.best,
+      }));
+      window.localStorage.setItem(BEST_KEY, String(state.best));
+    } catch {
+      // Storage can be off (private windows): progress then lasts this visit only.
+    }
+  }
+
+  function load() {
+    try {
+      const raw = window.localStorage.getItem(SAVE_KEY);
+      if (raw) {
+        const data = JSON.parse(raw);
+        if (typeof data.money === 'number') state.money = data.money;
+        if (data.upgrades) state.upgrades = { ...state.upgrades, ...data.upgrades };
+        if (typeof data.missionIndex === 'number') state.missionIndex = data.missionIndex;
+        if (typeof data.best === 'number') state.best = data.best;
+      } else {
+        const best = Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10);
+        if (Number.isInteger(best) && best > 0) state.best = best;
+      }
+    } catch {
+      // Corrupt or unavailable save: keep the fresh defaults.
+    }
+  }
+
   reset();
-  return { state, reset, step };
+  return world;
 }
