@@ -4,17 +4,29 @@
 [![rank](https://make.fun/badge/gta6-01/AIep5/tanjung-neon/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/AIep5/tanjung-neon/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-**Tanjung Neon** — an open-world crime game in a tropical port city at night. You are Dara, a night taxi driver turned night-market courier after loan sharks seized her cab. Drive through sudden tropical rain on neon-reflecting wet asphalt, run the night market's smuggling economy, steal cars, outrun three tiers of police, and take on four story missions — from a last fare in the first downpour to a final escape through a flooding tunnel.
+**Tanjung Neon** is an open-world crime game set in a fictional tropical port city after dark. You play Dara, a night taxi driver whose cab was seized by loan sharks — now she runs courier jobs through the night market to buy it back. One dense district holds everything: the container port, crowded market alleys, a canal, a financial strip, and a flood tunnel.
 
-Rain is both the look and the mechanic: it cuts grip and visibility, puddles mirror the neon, and a heavy storm can wash away your wanted level. Earn cash at the night market, buy rain tyres, a faster engine and armour, and spend it before the police spend you.
+Rain is the game's signature: it arrives in sudden tropical fronts, cuts your car's grip and your visibility, turns the asphalt into a mirror for the neon, and — when it really pours — washes away your wanted level. The police answer in three tiers: patrols that cruise, chasers that ram, and roadblocks, with a helicopter circling at four stars.
 
-The whole game is vanilla JavaScript on Canvas 2D with WebAudio synth sounds — no libraries, no network, no assets.
+## What is in the game
+
+- **Drive or walk** — steal parked cars with **E**, drive with traffic and pedestrians around you, hop out and continue on foot.
+- **Four story missions** — *Last Fare* (tutorial: pick up a VIP in the first downpour), *Night Market Run* (three checkpoints through the crowds as wanted rises), *Container Heist* (fight the guard, hold the truck, escape over the canal bridge), and *Flood Tunnel* (outrun a four-star blockade through a tunnel that is filling with water, 90 seconds on the clock).
+- **Night-market economy** — buy contraband cheap, sell it for more, and spend the profit on rain tyres, a faster engine, and armour. Stand by a market stall and press **F** to open the shop.
+- **Wanted system** — stars rise when you steal or smash through the city; lay low, or let a storm scrub you clean.
+- **HUD + minimap**, title / pause / busted / win screens, and a save in localStorage (money, upgrades, mission progress).
 
 ## How to play
 
-- **WASD / arrows** drive (or walk on foot). **E** enters and exits a car. **Space** is the handbrake.
-- Steal a parked car, take fares and market jobs to earn cash, and keep your wanted level down — rain helps.
-- **M** opens the market to buy and sell contraband and upgrade your car. **P** pauses, **R** restarts a mission.
+| Key | Action |
+|---|---|
+| WASD / arrows | Walk or drive |
+| E | Enter / exit / steal a car |
+| F | Punch (on foot) · open the market shop (near a stall) |
+| Shift | Handbrake (drift) |
+| Space / Enter | Start, confirm, retry a failed mission |
+| P / Esc | Pause |
+| M | Mute |
 
 ## Run it
 
@@ -26,6 +38,8 @@ python3 -m http.server 8080 --directory game
 # Hand it in exactly as the grader does (writes dossier.json beside the game)
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
+
+Built with vanilla JavaScript on Canvas 2D and WebAudio synth sound — no libraries, no network, no downloaded assets. Screenshots are deterministic staged renders from the game itself (`?shot=chase|steal|market|finale&seed=1`).
 
 ---
 
