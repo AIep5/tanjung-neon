@@ -159,3 +159,42 @@ export function inTunnel(city, x, y) {
   const t = city.tunnel;
   return x >= t.x0 && x <= t.x1 && Math.abs(y - t.y) <= t.w / 2;
 }
+
+// Street names for the HUD district tag: the nearest road gives the street,
+// so "PASAR MALAM — JL. NEON" always names where the player actually is.
+const STREET_X = ['JL. PELABUHAN', 'JL. SATE', 'JL. NEON', 'JL. KANAL', 'JL. MERDEKA', 'JL. TIMUR'];
+const STREET_Y = ['JL. PANTAI', 'JL. PASAR', 'JL. TENGAH', 'JL. KANAL SELATAN', 'JL. BANJIR'];
+
+/** District label (Indonesian) for a world point, for the HUD + minimap. */
+export function districtAt(x, y) {
+  for (const key of Object.keys(DISTRICTS)) {
+    const d = DISTRICTS[key];
+    if (x >= d.x0 && x <= d.x1 && y >= d.y0 && y <= d.y1) return d.label;
+  }
+  // Between districts: the nearest district centre wins.
+  let best = 'PASAR MALAM';
+  let bestD = Infinity;
+  for (const key of Object.keys(DISTRICTS)) {
+    const d = DISTRICTS[key];
+    const cx = (d.x0 + d.x1) / 2;
+    const cy = (d.y0 + d.y1) / 2;
+    const dist = Math.hypot(cx - x, cy - y);
+    if (dist < bestD) { bestD = dist; best = d.label; }
+  }
+  return best;
+}
+
+/** Street name for a world point: the closest road, vertical or horizontal. */
+export function streetNameAt(x, y) {
+  let bx = ROADS_X[0];
+  let bi = 0;
+  for (let i = 0; i < ROADS_X.length; i += 1) {
+    if (Math.abs(ROADS_X[i] - x) < Math.abs(bx - x)) { bx = ROADS_X[i]; bi = i; }
+  }
+  let by = ROADS_Y[0];
+  let bj = 0;
+  for (let j = 0; j < ROADS_Y.length; j += 1) {
+    if (Math.abs(ROADS_Y[j] - y) < Math.abs(by - y)) { by = ROADS_Y[j]; bj = j; }
+  }
+  return Math.abs(x - bx) <= Math.abs(y - by) ? STREET_X[bi] : STREET_Y[bj];
+}

@@ -11,8 +11,12 @@ import { CANAL, FIXED_DT, ROADS_X, ROADS_Y } from './config.js';
 import { collidesBuilding, isWater, nearestRoadPoint } from './city.js';
 import { ACTION_ENTER } from './input.js';
 import { raiseWanted } from './police.js';
-import { startMission } from './missions.js';
+import { dialogueFor, setDialogue, startMission } from './missions.js';
 import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+
+// Zoom per scene: the chase cover is the closest (1.6x), the steal is a
+// tight street shot (1.5x), market/finale stay wide enough to read the city.
+const SHOT_ZOOM = { start: 1.15, steal: 1.5, market: 1.4, chase: 1.6, finale: 1.35, play: 1.4, end: 1.35 };
 
 const START_SECONDS = 5;
 const STEAL_SECONDS = 8;
@@ -342,31 +346,118 @@ function runSeconds(world, input, seconds) {
 }
 
 /**
+ * Hold the current mission dialogue on screen for the staged frame, so the
+ * portrait + dialogue bar (hud.js) is visible in the screenshot instead of
+ * expiring 5 s after the mission started.
+ */
+function holdDialogue(state, seconds = 60) {
+  setDialogue(state, dialogueFor(state.mission), seconds);
+}
+
+/** Straight-throttle input: full gas, no steering, for the closing burst. */
+function cruiseInput() {
+  return {
+    direction: () => 0,
+    throttle: () => 1,
+    axis: () => ({ x: 0, y: 0 }),
+    handbrake: () => false,
+    takeGameActions: () => 0,
+  };
+}
+
+/**
+ * After the autopilot run, the car is often braking for a waypoint corner
+ * (35 px/s on the cover = "11 KM/H"). Drive it straight up to cruise speed
+ * with the real physics — a frame caught mid-flight, not mid-braking — for
+ * at most 1.5 s, stopping early if it wedges on a wall.
+ */
+function cruiseBurst(world) {
+  const state = world.state;
+  if (!state.player.car) return;
+  const input = cruiseInput();
+  let t = 0;
+  while (t < 1.5 && Math.abs(state.player.speed) < 260) {
+    world.step(FIXED_DT, input);
+    t += FIXED_DT;
+    if (t > 0.5 && Math.abs(state.player.speed) < 20) break;
+  }
+}
+
+/** Pull the nearest police car into the frame behind the player. */
+function pullPoliceNear(world, dist = 200) {
+  const state = world.state;
+  const p = state.player;
+  let best = null;
+  let bestD = Infinity;
+  for (const car of state.police.cars) {
+    const d = Math.hypot(car.x - p.x, car.y - p.y);
+    if (d < bestD) { bestD = d; best = car; }
+  }
+  if (!best) return;
+  best.x = p.x - Math.cos(p.angle) * dist + Math.sin(p.angle) * 60;
+  best.y = p.y - Math.sin(p.angle) * dist - Math.cos(p.angle) * 60;
+  best.angle = p.angle;
+  best.speed = 0;
+}
+
+/**
  * Set `world` to the named scene and return the screen to draw over it and
  * the best score to show. Unknown names fall back to 'start'.
  */
 export function stageShot(name, world) {
   world.reset();
   const state = world.state;
+  // Camera zoom for this scene, applied before the sim runs so the camera
+  // clamp in world.step already follows it.
+  state.camera.zoom = SHOT_ZOOM[name] ?? 1.35;
   if (name === 'start' || !name) {
     runSeconds(world, null, START_SECONDS);
     return { screen: SCREEN_TITLE, best: 0 };
   }
   if (name === 'steal') {
     runSeconds(world, makeAutopilot(world, 'approach'), STEAL_SECONDS);
+    // Dara, on foot beside the taxi, mid-line: the steal shot carries the story.
+    setDialogue(state, { speaker: 'Dara', text: 'Itu taksinya. E, masuk — cepat, sebelum pemiliknya kembali.' }, 60);
     return { screen: SCREEN_PLAY, best: state.best };
   }
   if (name === 'market' || name === 'play') {
     startMission(state, name === 'play' ? 0 : 1);
     runSeconds(world, makeAutopilot(world, 'drive'), name === 'play' ? 26 : MARKET_SECONDS);
+    cruiseBurst(world);
+    pullPoliceNear(world);
+    holdDialogue(state);
     return { screen: SCREEN_PLAY, best: state.best };
   }
   if (name === 'chase') {
+    // The cover: wanted 4 in the night market — helicopter + spotlight,
+    // roadblock ahead, four police converging. Storm forced on so the rain
+    // and neon reflections are at their strongest in the frame.
     startMission(state, 1);
-    raiseWanted(state, 3);
+    raiseWanted(state, 4);
     runSeconds(world, makeAutopilot(world, 'drive'), CHASE_SECONDS);
-    state.police.wanted = 3;
-    state.wanted = 3;
+    state.police.wanted = 4;
+    state.wanted = 4;
+    state.rain.intensity = 0.95;
+    state.rain.storm = true;
+    // Pull two police cars into the frame around the player: one cutting
+    // across ahead, one closing from behind. They were chasing anyway; this
+    // just guarantees the cover shows the pursuit, not an empty road.
+    const p = state.player;
+    const chasers = state.police.cars.filter((c) => c.mode === 'chase').slice(0, 2);
+    if (chasers[0]) {
+      chasers[0].x = p.x + Math.cos(p.angle) * 150 - Math.sin(p.angle) * 70;
+      chasers[0].y = p.y + Math.sin(p.angle) * 150 + Math.cos(p.angle) * 70;
+      chasers[0].angle = p.angle + Math.PI / 2;
+      chasers[0].speed = 0;
+    }
+    if (chasers[1]) {
+      chasers[1].x = p.x - Math.cos(p.angle) * 170 + Math.sin(p.angle) * 60;
+      chasers[1].y = p.y - Math.sin(p.angle) * 170 - Math.cos(p.angle) * 60;
+      chasers[1].angle = p.angle;
+      chasers[1].speed = 0;
+    }
+    cruiseBurst(world);
+    holdDialogue(state);
     return { screen: SCREEN_PLAY, best: state.best };
   }
   if (name === 'finale') {
@@ -375,6 +466,9 @@ export function stageShot(name, world) {
     runSeconds(world, makeAutopilot(world, 'drive'), FINALE_SECONDS);
     state.police.wanted = 4;
     state.wanted = 4;
+    cruiseBurst(world);
+    pullPoliceNear(world);
+    holdDialogue(state);
     return { screen: SCREEN_PLAY, best: state.best };
   }
   if (name === 'end') {

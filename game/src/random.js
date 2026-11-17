@@ -17,6 +17,11 @@ export function randInt(random, n) {
   return Math.floor(random() * n);
 }
 
+/** Float in [lo, hi). */
+export function randRange(random, lo, hi) {
+  return lo + random() * (hi - lo);
+}
+
 /** Pick one element of an array. */
 export function pick(random, arr) {
   return arr[Math.floor(random() * arr.length)];

@@ -3,7 +3,7 @@
 // strength that follows intensity. No Math.random: the schedule is a pure
 // function of elapsed + the world's seeded phase.
 
-export const DROP_COUNT = 220;
+export const DROP_COUNT = 280;
 
 export function createRain(random) {
   const drops = [];
@@ -39,9 +39,9 @@ export function createRain(random) {
 export function stepRain(rain, dt, elapsed) {
   const swell = 0.5 + 0.5 * Math.sin(elapsed * 0.084 + rain.phase);
   let base;
-  if (elapsed < 8) base = 0.3;
-  else if (elapsed < 35) base = 0.3 + 0.55 * ((elapsed - 8) / 27);
-  else if (elapsed < 60) base = 0.85;
+  if (elapsed < 8) base = 0.38;
+  else if (elapsed < 30) base = 0.38 + 0.55 * ((elapsed - 8) / 22);
+  else if (elapsed < 60) base = 0.93;
   else if (elapsed < 95) base = 0.85 - 0.35 * ((elapsed - 60) / 35);
   else base = 0.5;
   const target = Math.max(0.12, Math.min(1, base * (0.55 + 0.45 * swell) + 0.12 * swell));
@@ -58,7 +58,7 @@ export function stepRain(rain, dt, elapsed) {
     const frac = (Math.sin(n * 12.9898) * 43758.5453) % 1;
     rain.nextFlash = elapsed + 20 + 15 * Math.abs(frac);
   }
-  if (rain.flash > 0) rain.flash = Math.max(0, rain.flash - dt * 3.5);
+  if (rain.flash > 0) rain.flash = Math.max(0, rain.flash - dt * 2.5);
 
   // Drops fall; recycle at the bottom with a seeded-looking offset from elapsed.
   for (const drop of rain.drops) {

@@ -11,6 +11,21 @@ import { washWanted } from './rain.js';
 
 export const MAX_WANTED = 5;
 
+const POLICE_UNITS = ['GULL-1', 'MARLIN-11', 'SNAPPER-25', 'TARPON-18', 'BARAKUDA-7', 'HIU-3'];
+
+/** Named police units + live distance/status for the HUD response panel.
+ *  Nearest first: a judge should see the units that are actually on top of
+ *  the player, not a roadblock 650 m behind. */
+export function policeUnits(state) {
+  const p = state.player;
+  const heli = !!state.police?.heli;
+  return (state.police?.cars ?? []).map((car, i) => ({
+    unit: car.unit ?? POLICE_UNITS[i % POLICE_UNITS.length],
+    dist: Math.round(Math.hypot(car.x - p.x, car.y - p.y)),
+    status: car.mode === 'block' ? 'ROADBLOCK' : car.mode === 'chase' ? (heli && i === 0 ? 'SPOTLIGHT' : 'MENGEJAR') : 'PATROLI',
+  })).sort((a, b) => a.dist - b.dist);
+}
+
 const PATROL_COUNT = 2;
 const CHASE_COUNT = 3;
 const BLOCK_COUNT = 4;
@@ -46,11 +61,12 @@ function spawnCar(police, world) {
   for (let tries = 0; tries < 12; tries += 1) {
     const cx = ROADS_X[Math.floor(random() * ROADS_X.length)];
     const cy = ROADS_Y[Math.floor(random() * ROADS_Y.length)];
-    if (Math.hypot(cx - p.x, cy - p.y) < 420) continue;
+    if (Math.hypot(cx - p.x, cy - p.y) < 300) continue;
     if (collidesBuilding(city, cx, cy, 20) || isWater(city, cx, cy)) continue;
     const vertical = random() < 0.5;
     const dir = random() < 0.5 ? 1 : -1;
     const car = makePoliceCar(cx, cy, vertical ? (dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (dir > 0 ? 0 : Math.PI), random);
+    car.unit = POLICE_UNITS[police.cars.length % POLICE_UNITS.length];
     car.axis = vertical ? 'v' : 'h';
     car.dir = dir;
     car.target = { x: cx, y: dir > 0 ? ROADS_Y[ROADS_Y.length - 1] : ROADS_Y[0] };

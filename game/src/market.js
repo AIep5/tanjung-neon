@@ -76,12 +76,14 @@ export function buyShopItem(state, id) {
   return false;
 }
 
-/** True when the player is on foot near a market stall (within 70 px). */
+/** True when the player is on foot near a market stall (within SHOP_RANGE px). */
+export const SHOP_RANGE = 85;
+
 export function nearestStall(state, city) {
   const p = state.player;
   if (!p.onFoot) return null;
   let best = null;
-  let bestD = 70;
+  let bestD = SHOP_RANGE;
   for (const s of city.stalls) {
     const cx = s.x + s.w / 2;
     const cy = s.y + s.h / 2;

@@ -168,11 +168,12 @@ export function createAudio() {
         // Not initialised yet: ignore.
       }
     },
-    /** Police siren on/off. */
-    siren(on) {
+    /** Police siren on/off. Louder with the wanted level (1-5). */
+    siren(on, level = 1) {
       sirenOn = !!on;
       try {
-        if (sirenGain && context) sirenGain.gain.setTargetAtTime(sirenOn ? 0.035 : 0, context.currentTime, 0.15);
+        const gain = sirenOn ? Math.min(0.06, 0.02 + 0.01 * level) : 0;
+        if (sirenGain && context) sirenGain.gain.setTargetAtTime(gain, context.currentTime, 0.15);
       } catch {
         // Not initialised yet: ignore.
       }

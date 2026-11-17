@@ -2,18 +2,23 @@
 // logical view is scaled to fit the window and centred. The signature look is
 // wet asphalt: every neon sign and every car throws a mirrored streak onto the
 // road below it, so rain + neon reflections are visible in every shot.
+//
+// Iteration 2: the first submit read as a dark abstract grid at contact-sheet
+// size, so the camera now zooms in (state.camera.zoom, ~1.35x live, up to
+// 1.6x in the staged chase), the palette is lifted, buildings get lit
+// windows, district names are painted on the streets, police cars carry a
+// flashing red/blue halo, and the rain vignette no longer swallows the frame.
+// All HUD panels live in hud.js now; this file keeps the world + screens.
 
-import { FONT, PALETTE, ROADS_X, ROADS_Y, ROAD_W, TUNNEL, VIEW_H, VIEW_W, WORLD_H, WORLD_W } from './config.js';
-import { missionProgress } from './missions.js';
-import { shopItems } from './market.js';
+import { DISTRICT_LABELS, FONT, PALETTE, ROADS_X, ROADS_Y, ROAD_W, STREET_LABELS, TUNNEL, VIEW_H, VIEW_W, WORLD_H, WORLD_W } from './config.js';
+import { nearestStall, shopItems } from './market.js';
+import { drawDialogue as drawDialogueHud, drawDistrictTag, drawMinimap, drawMissionCard, drawObjectiveArrow, drawSpeedCluster, drawTimerBar, drawWantedPanel } from './hud.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
 export const SCREEN_PAUSED = 'paused';
 export const SCREEN_OVER = 'over';
 export const SCREEN_WIN = 'win';
-
-const MINIMAP = { w: 200, h: 140, margin: 16 };
 
 function rr(ctx, x, y, w, h, r) {
   const rad = Math.min(r, w / 2, h / 2);
@@ -30,6 +35,8 @@ export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
   const view = { scale: 1, x: 0, y: 0 };
   const fonts = new Map();
+  // The HUD module's functions share these two helpers + the canvas context.
+  const ui = { ctx, text, rr };
 
   function resize() {
     const ratio = window.devicePixelRatio || 1;
@@ -89,6 +96,32 @@ export function createRenderer(canvas) {
       ctx.beginPath(); ctx.moveTo(0, cy - ROAD_W / 2); ctx.lineTo(WORLD_W, cy - ROAD_W / 2); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(0, cy + ROAD_W / 2); ctx.lineTo(WORLD_W, cy + ROAD_W / 2); ctx.stroke();
     }
+  }
+
+  /** Soft pools of coloured light over the three liveliest districts. */
+  function drawAmbientGlow() {
+    const pools = [
+      { x: 1080, y: 860, r: 520, color: '255, 45, 120' },
+      { x: 320, y: 860, r: 420, color: '255, 176, 32' },
+      { x: 2260, y: 600, r: 420, color: '34, 230, 255' },
+    ];
+    for (const pool of pools) {
+      const grad = ctx.createRadialGradient(pool.x, pool.y, 20, pool.x, pool.y, pool.r);
+      grad.addColorStop(0, `rgba(${pool.color}, 0.07)`);
+      grad.addColorStop(1, `rgba(${pool.color}, 0)`);
+      ctx.fillStyle = grad;
+      ctx.fillRect(pool.x - pool.r, pool.y - pool.r, pool.r * 2, pool.r * 2);
+    }
+  }
+
+  /** District + street name plates painted on the ground, like the top entries'. */
+  function drawDistrictLabels() {
+    ctx.save();
+    ctx.globalAlpha = 0.32;
+    for (const d of DISTRICT_LABELS) text(d.label, d.x, d.y, d.size, d.color, 'center');
+    ctx.globalAlpha = 0.55;
+    for (const s of STREET_LABELS) text(s.label, s.x, s.y, 13, '#c8d4e0', 'center');
+    ctx.restore();
   }
 
   function drawCanal(state, city) {
@@ -154,11 +187,13 @@ export function createRenderer(canvas) {
     return ((h >>> 0) % 1000) / 1000;
   }
 
-  function drawBuildings(state, city, cam) {
-    const vx0 = cam.x - VIEW_W / 2 - 120;
-    const vx1 = cam.x + VIEW_W / 2 + 120;
-    const vy0 = cam.y - VIEW_H / 2 - 120;
-    const vy1 = cam.y + VIEW_H / 2 + 120;
+  function drawBuildings(state, city, cam, zoom) {
+    const hw = VIEW_W / (2 * zoom);
+    const hh = VIEW_H / (2 * zoom);
+    const vx0 = cam.x - hw - 120;
+    const vx1 = cam.x + hw + 120;
+    const vy0 = cam.y - hh - 120;
+    const vy1 = cam.y + hh + 120;
     for (const b of city.buildings) {
       if (b.x + b.w < vx0 || b.x > vx1 || b.y + b.h < vy0 || b.y > vy1) continue;
       ctx.fillStyle = b.color;
@@ -173,6 +208,20 @@ export function createRenderer(canvas) {
         const cw = 8 + hx * 14;
         const ch = 8 + hy * 12;
         ctx.fillRect(b.x + 12 + hx * Math.max(1, b.w - 24 - cw), b.y + 12 + hy * Math.max(1, b.h - 24 - ch), cw, ch);
+      }
+      // Lit windows: a dark slab becomes a building when some windows glow.
+      if (b.w >= 70 && b.h >= 50) {
+        const cols = Math.max(2, Math.floor(b.w / 34));
+        const rows = Math.max(1, Math.floor(b.h / 40));
+        for (let cx = 0; cx < cols; cx += 1) {
+          for (let cy = 0; cy < rows; cy += 1) {
+            if (hash2(b.x + cx * 53, b.y + cy * 71) < 0.45) continue;
+            ctx.globalAlpha = 0.5;
+            ctx.fillStyle = hash2(b.x + cx * 29, b.y + cy * 41) > 0.5 ? '#ffd27a' : '#9beaff';
+            ctx.fillRect(b.x + 12 + cx * ((b.w - 24) / cols), b.y + 12 + cy * ((b.h - 24) / rows), 9, 7);
+          }
+        }
+        ctx.globalAlpha = 1;
       }
       // Tall financial towers get a vertical neon strip on their west edge.
       if (b.tall) {
@@ -197,15 +246,17 @@ export function createRenderer(canvas) {
   }
 
   /** Mirrored neon streaks on the wet ground — the signature visual. */
-  function drawReflections(state, city, cam) {
-    const vx0 = cam.x - VIEW_W / 2 - 120;
-    const vx1 = cam.x + VIEW_W / 2 + 120;
-    const vy0 = cam.y - VIEW_H / 2 - 120;
-    const vy1 = cam.y + VIEW_H / 2 + 120;
+  function drawReflections(state, city, cam, zoom) {
+    const hw = VIEW_W / (2 * zoom);
+    const hh = VIEW_H / (2 * zoom);
+    const vx0 = cam.x - hw - 120;
+    const vx1 = cam.x + hw + 120;
+    const vy0 = cam.y - hh - 120;
+    const vy1 = cam.y + hh + 120;
     const wobble = Math.sin(state.elapsed * 2.2) * 3;
     // Puddle strength follows rain intensity: heavier rain, longer/brighter streaks.
-    const puddle = 0.08 + 0.22 * (state.rain?.intensity ?? 0.35);
-    const streakLen = 22 + 26 * (state.rain?.intensity ?? 0.35);
+    const puddle = 0.14 + 0.3 * (state.rain?.intensity ?? 0.35);
+    const streakLen = 30 + 40 * (state.rain?.intensity ?? 0.35);
     for (const b of city.buildings) {
       if (!b.sign || b.x + b.w < vx0 || b.x > vx1 || b.y + b.h < vy0 || b.y > vy1) continue;
       const grad = ctx.createLinearGradient(0, b.y + b.h, 0, b.y + b.h + streakLen);
@@ -218,7 +269,7 @@ export function createRenderer(canvas) {
     }
     for (const car of state.cars) {
       if (car.x < vx0 || car.x > vx1 || car.y < vy0 || car.y > vy1) continue;
-      ctx.globalAlpha = 0.08 + 0.14 * (state.rain?.intensity ?? 0.35);
+      ctx.globalAlpha = 0.1 + 0.16 * (state.rain?.intensity ?? 0.35);
       ctx.fillStyle = car.driver === 'player' ? PALETTE.neonMagenta : car.color;
       ctx.beginPath();
       ctx.ellipse(car.x, car.y + 16, car.w * 0.55, 8, 0, 0, Math.PI * 2);
@@ -227,11 +278,13 @@ export function createRenderer(canvas) {
     }
   }
 
-  function drawStallsAndContainers(state, city, cam) {
-    const vx0 = cam.x - VIEW_W / 2 - 80;
-    const vx1 = cam.x + VIEW_W / 2 + 80;
-    const vy0 = cam.y - VIEW_H / 2 - 80;
-    const vy1 = cam.y + VIEW_H / 2 + 80;
+  function drawStallsAndContainers(state, city, cam, zoom) {
+    const hw = VIEW_W / (2 * zoom);
+    const hh = VIEW_H / (2 * zoom);
+    const vx0 = cam.x - hw - 80;
+    const vx1 = cam.x + hw + 80;
+    const vy0 = cam.y - hh - 80;
+    const vy1 = cam.y + hh + 80;
     for (const c of city.containers) {
       if (c.x < vx0 || c.x > vx1 || c.y < vy0 || c.y > vy1) continue;
       ctx.fillStyle = c.color;
@@ -249,25 +302,47 @@ export function createRenderer(canvas) {
       ctx.fillStyle = s.awning;
       ctx.fillRect(s.x - 2, s.y - 4, s.w + 4, 7);
       // Warm stall light spilling onto the wet street.
-      ctx.globalAlpha = 0.22;
+      ctx.globalAlpha = 0.35;
       ctx.fillStyle = PALETTE.neonAmber;
       ctx.fillRect(s.x - 2, s.y + s.h, s.w + 4, 12);
       ctx.globalAlpha = 1;
     }
   }
 
-  function drawPeds(state, cam) {
+  function drawPeds(state, cam, zoom) {
+    const hw = VIEW_W / (2 * zoom);
+    const hh = VIEW_H / (2 * zoom);
     for (const ped of state.peds) {
-      if (Math.abs(ped.x - cam.x) > VIEW_W / 2 + 40 || Math.abs(ped.y - cam.y) > VIEW_H / 2 + 40) continue;
+      if (Math.abs(ped.x - cam.x) > hw + 40 || Math.abs(ped.y - cam.y) > hh + 40) continue;
+      // Soft shadow so the crowd reads on the wet road.
+      ctx.globalAlpha = 0.25;
+      ctx.fillStyle = '#000000';
+      ctx.beginPath();
+      ctx.ellipse(ped.x, ped.y + 8, 6, 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
       ctx.fillStyle = ped.color;
       ctx.beginPath();
-      ctx.arc(ped.x, ped.y - 5, 4, 0, Math.PI * 2);
+      ctx.arc(ped.x, ped.y - 5, 5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillRect(ped.x - 3, ped.y - 2, 6, 9);
+      ctx.fillRect(ped.x - 3.5, ped.y - 2, 7, 11);
     }
   }
 
   function drawCar(car, isPlayer, elapsed = 0) {
+    // Police halo: a flashing red/blue pool of light around the patrol car,
+    // so a chase reads even at contact-sheet size. Drawn in world space,
+    // before the car's own rotation.
+    if (car.driver === 'police') {
+      const phase = Math.floor(elapsed * 3.5) % 2 === 0;
+      const halo = ctx.createRadialGradient(car.x, car.y, 4, car.x, car.y, 85);
+      halo.addColorStop(0, phase ? 'rgba(255, 59, 48, 0.34)' : 'rgba(59, 130, 255, 0.34)');
+      halo.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(car.x, car.y, 85, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.save();
     ctx.translate(car.x, car.y);
     ctx.rotate(car.angle);
@@ -309,7 +384,12 @@ export function createRenderer(canvas) {
       text('TAXI', 0, -car.h / 2 - 6, 9, '#f5b301', 'center');
     }
     if (car.driver === 'police') {
-      // Roof light bar, flashing red/blue (deterministic phase from elapsed).
+      // Blue door stripe + roof light bar, flashing red/blue (deterministic
+      // phase from elapsed) + the unit call-sign over the roof.
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = '#3b82ff';
+      ctx.fillRect(-car.w / 2 + 8, -2, car.w - 16, 4);
+      ctx.globalAlpha = 1;
       const phase = Math.floor(elapsed * 3.5) % 2 === 0;
       ctx.fillStyle = '#0b0e13';
       ctx.fillRect(-8, -5, 16, 10);
@@ -317,10 +397,13 @@ export function createRenderer(canvas) {
       ctx.fillRect(-7, -4, 6, 8);
       ctx.fillStyle = phase ? '#3b82ff' : '#ff3b30';
       ctx.fillRect(1, -4, 6, 8);
-      ctx.fillStyle = '#fff';
-      text('POLISI', 0, -car.h / 2 - 6, 8, '#dfe6ee', 'center');
     }
     ctx.restore();
+    // Unit call-sign, drawn unrotated in world space: inside the rotated
+    // body it came out upside-down whenever the car faced south.
+    if (car.driver === 'police') {
+      text(car.unit ?? 'POLISI', car.x, car.y - car.h / 2 - 8, 9, '#dfe6ee', 'center');
+    }
   }
 
   function drawPlayerOnFoot(state) {
@@ -382,12 +465,12 @@ export function createRenderer(canvas) {
     if (!h) return;
     const p = state.player;
     // Spotlight: pale pool tracking the player.
-    const grad = ctx.createRadialGradient(p.x, p.y, 10, p.x, p.y, 140);
-    grad.addColorStop(0, 'rgba(255, 244, 190, 0.28)');
+    const grad = ctx.createRadialGradient(p.x, p.y, 10, p.x, p.y, 170);
+    grad.addColorStop(0, 'rgba(255, 244, 190, 0.32)');
     grad.addColorStop(1, 'rgba(255, 244, 190, 0)');
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 140, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, 170, 0, Math.PI * 2);
     ctx.fill();
     // Heli body + spinning rotor.
     ctx.save();
@@ -408,6 +491,7 @@ export function createRenderer(canvas) {
     ctx.arc(12, 0, 3, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+    text('HELI', h.x, h.y - 18, 10, '#dfe6ee', 'center');
   }
 
   function drawMissionMarker(state) {
@@ -463,14 +547,20 @@ export function createRenderer(canvas) {
     const state = world.state;
     const city = world.city;
     const cam = state.camera;
-    ctx.setTransform(view.scale, 0, 0, view.scale, view.x + (VIEW_W / 2 - cam.x) * view.scale, view.y + (VIEW_H / 2 - cam.y) * view.scale);
+    // Zoomed camera: the player, cars and crowds fill the frame instead of
+    // the city grid. Zoom lives on state.camera (default 1.35, per-shot
+    // override in shots.js, ?zoom= in main.js).
+    const zoom = cam.zoom ?? 1;
+    ctx.setTransform(view.scale * zoom, 0, 0, view.scale * zoom, view.x + (VIEW_W / 2 - cam.x * zoom) * view.scale, view.y + (VIEW_H / 2 - cam.y * zoom) * view.scale);
     drawRoads(state);
+    drawAmbientGlow();
     drawCanal(state, city);
     drawTunnel(state, city);
-    drawBuildings(state, city, cam);
-    drawReflections(state, city, cam);
-    drawStallsAndContainers(state, city, cam);
-    drawPeds(state, cam);
+    drawDistrictLabels();
+    drawBuildings(state, city, cam, zoom);
+    drawReflections(state, city, cam, zoom);
+    drawStallsAndContainers(state, city, cam, zoom);
+    drawPeds(state, cam, zoom);
     for (const car of state.cars) drawCar(car, car.driver === 'player', state.elapsed);
     drawPlayerOnFoot(state);
     drawGuard(state);
@@ -495,7 +585,7 @@ export function createRenderer(canvas) {
     ctx.stroke();
     // Splash rings, deterministic from elapsed + drop index.
     ctx.globalAlpha = 0.3 * rain.intensity;
-    for (let i = 0; i < 42; i += 1) {
+    for (let i = 0; i < 60; i += 1) {
       const t = (state.elapsed * 1.7 + i * 0.37) % 1;
       const x = (i * 311 + 97) % VIEW_W;
       const y = (i * 173 + 53) % VIEW_H;
@@ -506,11 +596,12 @@ export function createRenderer(canvas) {
     ctx.globalAlpha = 1;
     // Lightning flash: brief full-screen brighten (visual only).
     if (rain.flash > 0) {
-      ctx.fillStyle = `rgba(210, 225, 255, ${0.28 * rain.flash})`;
+      ctx.fillStyle = `rgba(210, 225, 255, ${0.2 * rain.flash})`;
       ctx.fillRect(0, 0, VIEW_W, VIEW_H);
     }
-    // Vignette deepens with rain intensity (heavy rain = less visibility).
-    const vig = 0.3 + 0.45 * rain.intensity;
+    // Vignette: lighter than the first submit — heavy rain used to swallow
+    // the frame (0.3 + 0.45 * intensity); now it only shades the corners.
+    const vig = 0.1 + 0.22 * rain.intensity;
     const grad = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.42, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.85);
     grad.addColorStop(0, 'rgba(2, 4, 8, 0)');
     grad.addColorStop(1, `rgba(2, 4, 8, ${vig})`);
@@ -518,121 +609,21 @@ export function createRenderer(canvas) {
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   }
 
-  function drawObjectiveArrow(state) {
-    if (!state.mission) return;
-    const target = state.mission.def.targets[state.mission.checkpoint];
-    const p = state.player;
-    const dx = target.x - p.x;
-    const dy = target.y - p.y;
-    const dist = Math.hypot(dx, dy);
-    const angle = Math.atan2(dy, dx);
-    const cx = VIEW_W / 2;
-    const cy = 66;
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(angle);
-    ctx.fillStyle = PALETTE.neonMagenta;
-    ctx.beginPath();
-    ctx.moveTo(16, 0);
-    ctx.lineTo(-10, -10);
-    ctx.lineTo(-4, 0);
-    ctx.lineTo(-10, 10);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-    text(`${target.label} — ${Math.round(dist)}m`, cx + 26, cy + 5, 15, PALETTE.hudText, 'left');
-  }
-
-  function drawHud(state, best) {
+  function drawHud(state, best, city) {
     ctx.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
-    // Top-left: money + mission.
-    ctx.fillStyle = PALETTE.hudBg;
-    rr(ctx, 14, 12, 340, 46, 8);
-    ctx.fill();
-    text(`$ ${state.money}`, 28, 42, 24, PALETTE.neonAmber, 'left');
-    const progress = missionProgress(state);
-    text(progress.label, 28, 52, 13, PALETTE.hudDim, 'left');
-    // Health bar under the money panel.
-    ctx.fillStyle = PALETTE.hudBg;
-    rr(ctx, 14, 62, 180, 16, 6);
-    ctx.fill();
-    const hpFrac = Math.max(0, state.player.health) / 100;
-    ctx.fillStyle = hpFrac > 0.5 ? PALETTE.neonGreen : hpFrac > 0.25 ? PALETTE.neonAmber : PALETTE.neonRed;
-    rr(ctx, 16, 64, 176 * hpFrac, 12, 5);
-    ctx.fill();
-    text(`NYAWA ${Math.round(state.player.health)}`, 200, 75, 11, PALETTE.hudDim, 'left');
-    // Mission 4 timer bar (top centre).
-    if (state.mission?.def.timer) {
-      const frac = Math.max(0, state.mission.timeLeft) / state.mission.def.timer;
-      const bw = 320;
-      const bx = (VIEW_W - bw) / 2;
-      ctx.fillStyle = PALETTE.hudBg;
-      rr(ctx, bx - 6, 12, bw + 12, 30, 8);
-      ctx.fill();
-      ctx.fillStyle = frac > 0.33 ? PALETTE.neonCyan : PALETTE.neonRed;
-      rr(ctx, bx, 18, bw * frac, 18, 5);
-      ctx.fill();
-      text(`${Math.ceil(state.mission.timeLeft)}s — AIR NAIK`, VIEW_W / 2, 56, 13, PALETTE.hudText, 'center');
-    }
-    // Top-right: wanted stars.
-    ctx.fillStyle = PALETTE.hudBg;
-    rr(ctx, VIEW_W - 214, 12, 200, 46, 8);
-    ctx.fill();
-    text('WANTED', VIEW_W - 200, 30, 11, PALETTE.hudDim, 'left');
-    let stars = '';
-    for (let i = 0; i < 5; i += 1) stars += i < state.wanted ? '★' : '☆';
-    text(stars, VIEW_W - 200, 50, 18, state.wanted >= 3 ? PALETTE.neonRed : PALETTE.neonAmber, 'left');
-    drawObjectiveArrow(state);
-    drawMinimap(state);
-    // Bottom hint line.
+    drawMissionCard(ui, state);
+    drawWantedPanel(ui, state);
+    drawTimerBar(ui, state);
+    drawObjectiveArrow(ui, state);
+    drawDistrictTag(ui, state);
+    drawMinimap(ui, state);
+    drawSpeedCluster(ui, state);
+    // Bottom hint line: near a stall it names the shop key first.
     const hint = state.player.onFoot
-      ? 'WASD jalan • E curi mobil • F aksi/beli • M suara • P jeda'
+      ? (nearestStall(state, city) ? 'F — buka Pasar Gelap • WASD jalan • E curi mobil • M suara • P jeda' : 'WASD jalan • E curi mobil • F aksi/beli • M suara • P jeda')
       : 'WASD mengemudi • Shift handbrake • E keluar mobil • M suara • P jeda';
     text(hint, VIEW_W / 2, VIEW_H - 14, 14, PALETTE.hudDim, 'center');
     void best;
-  }
-
-  function drawMinimap(state) {
-    const x0 = VIEW_W - MINIMAP.w - MINIMAP.margin;
-    const y0 = VIEW_H - MINIMAP.h - MINIMAP.margin - 24;
-    const sx = MINIMAP.w / WORLD_W;
-    const sy = MINIMAP.h / WORLD_H;
-    ctx.fillStyle = 'rgba(6, 10, 16, 0.82)';
-    rr(ctx, x0 - 6, y0 - 6, MINIMAP.w + 12, MINIMAP.h + 12, 8);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(138, 148, 166, 0.7)';
-    ctx.lineWidth = 1;
-    for (const cx of ROADS_X) {
-      ctx.beginPath(); ctx.moveTo(x0 + cx * sx, y0); ctx.lineTo(x0 + cx * sx, y0 + MINIMAP.h); ctx.stroke();
-    }
-    for (const cy of ROADS_Y) {
-      ctx.beginPath(); ctx.moveTo(x0, y0 + cy * sy); ctx.lineTo(x0 + MINIMAP.w, y0 + cy * sy); ctx.stroke();
-    }
-    ctx.fillStyle = '#0a5e7a';
-    ctx.fillRect(x0, y0 + 1380 * sy, MINIMAP.w, 10 * sy + 2);
-    if (state.mission) {
-      const t = state.mission.def.targets[state.mission.checkpoint];
-      const pulse = 3 + 1.5 * Math.sin(state.elapsed * 5);
-      ctx.fillStyle = PALETTE.neonMagenta;
-      ctx.beginPath();
-      ctx.arc(x0 + t.x * sx, y0 + t.y * sy, pulse, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    for (const car of state.cars) {
-      if (car.driver !== 'police') continue;
-      ctx.fillStyle = PALETTE.neonRed;
-      ctx.fillRect(x0 + car.x * sx - 2, y0 + car.y * sy - 2, 4, 4);
-    }
-    const p = state.player;
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(x0 + p.x * sx, y0 + p.y * sy, 3.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = PALETTE.neonCyan;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(x0 + p.x * sx, y0 + p.y * sy, 6, 0, Math.PI * 2);
-    ctx.stroke();
   }
 
   function drawPanel(title, lines, prompt, accent) {
@@ -658,21 +649,8 @@ export function createRenderer(canvas) {
   }
 
   function drawDialogue(state) {
-    const d = state.dialogue;
-    if (!d || state.elapsed > d.until) return;
     ctx.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
-    const w = 720;
-    const x = (VIEW_W - w) / 2;
-    const y = VIEW_H - 108;
-    ctx.fillStyle = 'rgba(10, 15, 22, 0.88)';
-    rr(ctx, x, y, w, 56, 10);
-    ctx.fill();
-    ctx.strokeStyle = d.speaker === 'Raka' ? PALETTE.neonCyan : PALETTE.neonMagenta;
-    ctx.lineWidth = 2;
-    rr(ctx, x, y, w, 56, 10);
-    ctx.stroke();
-    text(`${d.speaker}:`, x + 18, y + 34, 16, d.speaker === 'Raka' ? PALETTE.neonCyan : PALETTE.neonMagenta, 'left');
-    text(d.text, x + 96, y + 34, 15, PALETTE.hudText, 'left');
+    drawDialogueHud(ui, state);
   }
 
   /** Black-market shop panel (world is paused while it is open). */
@@ -717,13 +695,13 @@ export function createRenderer(canvas) {
     ctx.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
     const w = 520;
     ctx.fillStyle = 'rgba(10, 15, 22, 0.88)';
-    rr(ctx, (VIEW_W - w) / 2, 96, w, 52, 10);
+    rr(ctx, (VIEW_W - w) / 2, 160, w, 52, 10);
     ctx.fill();
     ctx.strokeStyle = PALETTE.neonGreen;
     ctx.lineWidth = 2;
-    rr(ctx, (VIEW_W - w) / 2, 96, w, 52, 10);
+    rr(ctx, (VIEW_W - w) / 2, 160, w, 52, 10);
     ctx.stroke();
-    text(banner, VIEW_W / 2, 130, 20, PALETTE.neonGreen, 'center');
+    text(banner, VIEW_W / 2, 194, 20, PALETTE.neonGreen, 'center');
   }
 
   /** Paint one frame: world, rain, HUD, then the panel for the current screen. */
@@ -744,7 +722,7 @@ export function createRenderer(canvas) {
           'Curi mobil, antar paket, dan jangan sampai ketangkap.',
           '',
           'WASD / panah — jalan & mengemudi    E — curi / keluar mobil',
-          'Shift — handbrake    F — aksi    P — jeda',
+          'Shift — handbrake (lari saat jalan kaki)    F — aksi    P — jeda',
           best > 0 ? `Rekor uang: $ ${best}` : '',
         ],
         'Tekan Spasi atau klik untuk mulai',
@@ -752,7 +730,7 @@ export function createRenderer(canvas) {
       );
       return;
     }
-    drawHud(state, best);
+    drawHud(state, best, world.city);
     drawBanner(banner);
     drawDialogue(state);
     if (state.missionFailed) {

@@ -142,17 +142,37 @@ export function retryMission(state) {
   return startMission(state, i);
 }
 
-/** Current objective label + whether the mission list is done. */
+/** Current objective label, short: one line, no repeated target prompt. */
 export function missionProgress(state) {
+  const card = missionCard(state);
+  if (card.done) return { label: 'Semua misi selesai — kota ini milikmu.', done: true };
+  const step = card.steps > 1 ? ` (${card.checkpoint + 1}/${card.steps})` : '';
+  return { label: `${card.objective}${step}`, done: false };
+}
+
+/**
+ * Everything the mission card HUD needs in one object: mission number,
+ * title, a single objective line, the next step + live distance, and the
+ * stage bar fraction. The HUD (hud.js drawMissionCard) renders this; the
+ * old long label that repeated the target prompt three times is gone.
+ */
+export function missionCard(state) {
+  const total = MISSIONS.length;
+  const distTo = (t) => (state.player ? Math.round(Math.hypot(t.x - state.player.x, t.y - state.player.y)) : 0);
   if (!state.mission) {
-    if (state.missionFailed) return { label: 'Misi gagal — tekan R / Spasi untuk coba lagi', done: false };
+    if (state.missionFailed) {
+      const i = Math.max(0, state.failedMissionIndex);
+      return { num: i + 1, total, title: 'MISI GAGAL', objective: 'Tekan R / Spasi untuk coba lagi', next: MISSIONS[i].title, nextDist: 0, done: false, failed: true, checkpoint: 0, steps: MISSIONS[i].targets.length };
+    }
     const next = state.missionIndex + 1;
-    if (next >= MISSIONS.length) return { label: 'Semua misi selesai — kota ini milikmu.', done: true };
-    return { label: `Misi berikutnya: ${MISSIONS[next].title}`, done: false };
+    if (next >= total) {
+      return { num: total, total, title: 'KOTA MILIKMU', objective: 'Semua misi selesai — kota ini milikmu.', next: '', nextDist: 0, done: true, failed: false, checkpoint: 1, steps: 1 };
+    }
+    const def = MISSIONS[next];
+    return { num: next + 1, total, title: def.title.toUpperCase(), objective: def.objective, next: def.targets[0].label, nextDist: distTo(def.targets[0]), done: false, failed: false, checkpoint: 0, steps: def.targets.length };
   }
-  const target = state.mission.def.targets[state.mission.checkpoint];
-  const total = state.mission.def.targets.length;
-  const step = total > 1 ? ` (${state.mission.checkpoint + 1}/${total})` : '';
-  const prompt = target.prompt ? ` — ${target.prompt}` : '';
-  return { label: `${state.mission.def.objective}${step} — ${target.label}${prompt}`, done: false };
+  const m = state.mission;
+  const def = m.def;
+  const target = def.targets[m.checkpoint];
+  return { num: (state.missionIndex ?? 0) + 1, total, title: def.title.toUpperCase(), objective: def.objective, next: target.label, nextDist: distTo(target), done: false, failed: false, checkpoint: m.checkpoint, steps: def.targets.length };
 }

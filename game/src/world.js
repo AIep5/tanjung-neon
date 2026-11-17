@@ -5,7 +5,7 @@
 // game over) without the world knowing about screens. No Math.random in here:
 // every random draw comes from the seeded RNG passed to createWorld.
 
-import { BEST_KEY, SAVE_KEY, TUNING } from './config.js';
+import { BEST_KEY, CAMERA_ZOOM_DEFAULT, SAVE_KEY, TUNING, VIEW_H, VIEW_W, WORLD_H, WORLD_W } from './config.js';
 import { ACTION_ENTER, ACTION_USE } from './input.js';
 import { buildCity, collidesBuilding, isWater } from './city.js';
 import { createTraffic, driveCar, stealCar, stepTraffic } from './vehicles.js';
@@ -36,7 +36,7 @@ export function createWorld(random) {
     police: null,
     upgrades: { tyres: 0, engine: 0, armour: 0 },
     inventory: { contraband: 0 },
-    camera: { x: 0, y: 0 },
+    camera: { x: 0, y: 0, zoom: CAMERA_ZOOM_DEFAULT },
     best: 0,
     shop: { open: false, sel: 0, cd: 0 },
     guard: null,
@@ -72,6 +72,7 @@ export function createWorld(random) {
     state.failedMissionIndex = -1;
     state.camera.x = state.player.x;
     state.camera.y = state.player.y;
+    state.camera.zoom = CAMERA_ZOOM_DEFAULT;
     // Best is NOT reset: it is the player's record across runs.
   }
 
@@ -80,14 +81,17 @@ export function createWorld(random) {
     return collidesBuilding(city, x, y, r) || isWater(city, x, y);
   }
 
-  function moveOnFoot(dt, ax) {
+  function moveOnFoot(dt, ax, run) {
     const p = state.player;
-    const nx = p.x + ax.x * TUNING.walkSpeed * dt;
-    const ny = p.y + ax.y * TUNING.walkSpeed * dt;
+    // Shift while on foot is a sprint (1.35x); in a car the same key is the
+    // handbrake — one key, two jobs, both visible in the HUD hint.
+    const speed = TUNING.walkSpeed * (run ? 1.35 : 1);
+    const nx = p.x + ax.x * speed * dt;
+    const ny = p.y + ax.y * speed * dt;
     if (!solid(nx, p.y, 10) && nx > 10 && nx < 2550) p.x = nx;
     if (!solid(p.x, ny, 10) && ny > 10 && ny < 1790) p.y = ny;
     if (ax.x !== 0 || ax.y !== 0) p.angle = Math.atan2(ax.y, ax.x);
-    p.speed = (ax.x !== 0 || ax.y !== 0) ? TUNING.walkSpeed : 0;
+    p.speed = (ax.x !== 0 || ax.y !== 0) ? speed : 0;
   }
 
   function enterOrExitCar() {
@@ -229,7 +233,8 @@ export function createWorld(random) {
         if (used === 'shop') events |= EVENT_BOUGHT;
       }
       if (p.onFoot) {
-        moveOnFoot(dt, input.axis());
+        // Autopilot inputs (shots.js) predate run(): fall back to handbrake.
+        moveOnFoot(dt, input.axis(), typeof input.run === 'function' ? input.run() : input.handbrake());
       } else if (p.car) {
         p.car.handbrake = input.handbrake();
         const grip = gripFactor(state.rain) * (1 + 0.05 * state.upgrades.tyres);
@@ -259,15 +264,19 @@ export function createWorld(random) {
     }
 
     stepTraffic(state.cars, city, dt, random);
-    stepCrowd(state.peds, city, dt, random);
+    stepCrowd(state.peds, city, dt, random, state.player);
     stepGuard(state, city, dt);
     stepPolice(state.police, world, dt);
 
     events |= checkMission(dt);
 
     // Camera follows the player (or their car), clamped to the world.
-    const tx = Math.min(Math.max(p.x, 640), 2560 - 640);
-    const ty = Math.min(Math.max(p.y, 360), 1800 - 360);
+    // The clamp follows the zoom: a zoomed-in camera can hug the edges.
+    const zoom = state.camera.zoom ?? 1;
+    const hw = VIEW_W / (2 * zoom);
+    const hh = VIEW_H / (2 * zoom);
+    const tx = Math.min(Math.max(p.x, hw), WORLD_W - hw);
+    const ty = Math.min(Math.max(p.y, hh), WORLD_H - hh);
     const k = Math.min(1, TUNING.cameraLerp * dt);
     state.camera.x += (tx - state.camera.x) * k;
     state.camera.y += (ty - state.camera.y) * k;

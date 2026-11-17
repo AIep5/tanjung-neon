@@ -84,8 +84,12 @@ export function createInput(target) {
       const len = Math.hypot(x, y);
       return { x: x / len, y: y / len };
     },
-    /** True while either Shift is held. */
+    /** True while either Shift is held: handbrake in a car, sprint on foot. */
     handbrake() {
+      return held.handbrake;
+    },
+    /** Alias for handbrake(): Shift means "run" while on foot (world.js). */
+    run() {
       return held.handbrake;
     },
     /** The one-shot UI presses since the last call (CONFIRM / PAUSE). */

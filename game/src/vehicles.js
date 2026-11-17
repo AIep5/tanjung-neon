@@ -10,6 +10,7 @@ const KINDS = [
   { kind: 'taxi', color: '#f5b301', w: 46, h: 24 },
   { kind: 'sedan', color: '#c94f6d', w: 46, h: 24 },
   { kind: 'sedan', color: '#4f7ec9', w: 46, h: 24 },
+  { kind: 'sedan', color: '#22e6ff', w: 46, h: 24 },
   { kind: 'sedan', color: '#e8e8e8', w: 46, h: 24 },
   { kind: 'truck', color: '#7a8899', w: 62, h: 28 },
   { kind: 'sport', color: '#ff2d78', w: 48, h: 23 },
@@ -36,7 +37,8 @@ function makeCar(random, x, y, angle, driver) {
 export function createTraffic(city, random) {
   const cars = [];
   // Driving traffic: start each one at a random intersection, heading along a road.
-  for (let i = 0; i < 14; i += 1) {
+  // Iteration 2: 20 cars, not 14 — a denser street is what the chase cover needs.
+  for (let i = 0; i < 20; i += 1) {
     const cx = pick(random, ROADS_X);
     const cy = pick(random, ROADS_Y);
     const vertical = random() < 0.5;
@@ -59,6 +61,8 @@ export function createTraffic(city, random) {
     { x: 2320, y: 1300, angle: Math.PI / 2, kind: 'sedan' },
     { x: 1080, y: 300, angle: 0, kind: 'sedan' },
     { x: 640, y: 1330, angle: Math.PI, kind: 'taxi' },
+    { x: 760, y: 945, angle: 0, kind: 'sedan' },
+    { x: 1360, y: 700, angle: Math.PI, kind: 'sport' },
     { x: 1520, y: 200, angle: Math.PI / 2, kind: 'sedan' },
     { x: 200, y: 1100, angle: 0, kind: 'truck' },
   ];

@@ -4,7 +4,8 @@
 //
 // ?seed=N fixes the city. ?shot=chase|steal|market|finale|start (with &seed=N)
 // stages that scene instead of running the loop, paints it twice and sets
-// window.__shotReady for a screenshot.
+// window.__shotReady for a screenshot. &zoom=1.0..2.0 overrides the scene's
+// staged camera zoom (shots.js SHOT_ZOOM) — the cover is shot at 1.6x.
 import { BEST_KEY, FIXED_DT, MAX_FRAME } from './config.js';
 import { createRandom } from './random.js';
 import { EVENT_BOUGHT, EVENT_GAMEOVER, EVENT_MISSION, EVENT_WANTED, createWorld } from './world.js';
@@ -18,6 +19,7 @@ const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
 const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
 const seed = Number.isInteger(seedParam) ? seedParam : 20261117;
+const zoomParam = Number.parseFloat(params.get('zoom') ?? '');
 
 const canvas = document.getElementById('game');
 const status = document.getElementById('status');
@@ -43,6 +45,10 @@ function saveBest(value) {
 
 function runShot(name) {
   const scene = stageShot(name, world);
+  // A ?zoom= override wins over the scene's staged zoom for this frame.
+  if (Number.isFinite(zoomParam) && zoomParam >= 1 && zoomParam <= 2) {
+    world.state.camera.zoom = zoomParam;
+  }
   window.__game = {
     world,
     getScreen: () => scene.screen,
@@ -158,7 +164,8 @@ function runGame() {
     const events = world.step(FIXED_DT, input);
     audio.setRain(world.state.rain.intensity);
     audio.engine(world.state.player.speed);
-    audio.siren(world.state.wanted >= 1);
+    // Siren loudness follows the wanted level: more heat, louder sirens.
+    audio.siren(world.state.wanted >= 1, world.state.wanted);
     if (events & EVENT_MISSION) {
       banner = world.state.missionFailed
         ? 'Misi gagal! Tekan R / Spasi untuk coba lagi.'

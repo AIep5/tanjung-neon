@@ -9,7 +9,7 @@ export const GUARD_PUNCHES_TO_KO = 3;
 
 /** Spawn the port guard beside the heist truck. */
 export function createGuard(x, y) {
-  return { x, y, hp: GUARD_PUNCHES_TO_KO, down: false, angle: 0, hitCd: 0, hurtCd: 0 };
+  return { x, y, hp: GUARD_PUNCHES_TO_KO, down: false, angle: 0, hitCd: 0, hurtCd: 0, alerted: false };
 }
 
 /**
@@ -24,9 +24,10 @@ export function punchAttack(state) {
   if (d > PUNCH_RANGE) return null;
   guard.hp -= 1;
   guard.hurtCd = 0.25;
+  guard.alerted = true;
   const away = Math.atan2(guard.y - p.y, guard.x - p.x);
-  guard.x += Math.cos(away) * 12;
-  guard.y += Math.sin(away) * 12;
+  guard.x += Math.cos(away) * 16;
+  guard.y += Math.sin(away) * 16;
   if (guard.hp <= 0) {
     guard.down = true;
     return 'ko';
@@ -46,7 +47,10 @@ export function stepGuard(state, city, dt) {
   }
   if (!p.onFoot) return;
   const d = Math.hypot(p.x - guard.x, p.y - guard.y);
-  if (d > 280) return; // Only wakes when the player comes close.
+  // The guard wakes sooner now (340 px, was 280) and, once alerted by a
+  // punch, closes in faster — the heist fight should feel like a fight.
+  if (d > 340) return;
+  guard.alerted = true;
   if (d < 26) {
     // The guard shoves Dara: a little damage, with a cooldown.
     if (guard.hitCd <= 0) {
@@ -58,8 +62,9 @@ export function stepGuard(state, city, dt) {
   }
   const desired = Math.atan2(p.y - guard.y, p.x - guard.x);
   guard.angle = desired;
-  const nx = guard.x + Math.cos(desired) * 170 * dt;
-  const ny = guard.y + Math.sin(desired) * 170 * dt;
+  const chaseSpeed = guard.alerted ? 185 : 170;
+  const nx = guard.x + Math.cos(desired) * chaseSpeed * dt;
+  const ny = guard.y + Math.sin(desired) * chaseSpeed * dt;
   if (!collidesBuilding(city, nx, ny, 8) && !isWater(city, nx, ny)) {
     guard.x = nx;
     guard.y = ny;
